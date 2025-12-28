@@ -1,4 +1,4 @@
-# Nano-vLLM 完全指南
+# Nano-vLLM 源码解析
 
 > 从原理到实践：深入理解轻量级 LLM 推理引擎
 
@@ -343,16 +343,16 @@ Block 分配:
 │ Hash: A │ Hash: B  │ Hash: C    │             │
 └─────────┴──────────┴────────────┴─────────────┘
            ↓
-检查哈希表: {A: 0, B: 5}  # Block 0 和 Block 5 已存在
+检查哈希表: {A: 0, B: 1}  # Block 0 和 Block 1 已存在
 
 结果:
 ┌─────────┬──────────┬────────────┐
-│ 复用    │ 复用     │ 分配新的   │
-│ Block 0 │ Block 5  │ Block 2    │
-│ (+ref)  │ (+ref)   │ (新分配)   │
+│ 复用    │ 复用     │ 分配新的      │
+│ Block 0 │ Block 5  │ Block 3    │
+│ (+ref)  │ (+ref)   │  [7,8]     │
 └─────────┴──────────┴────────────┘
 
-跳过计算: Block 0 和 Block 5 的 KV cache 直接复用！
+跳过计算: Block 0 和 Block 1 的 KV cache 直接复用！
 ```
 
 ### 性能提升
@@ -461,6 +461,117 @@ input_ids.shape = [batch_size]  # 例如: [32] (32个序列，每个1 token)
 q.shape = [batch_size, 1, num_heads, head_dim]
 context_lens = [120, 256, 512, ...]  # 每个序列的长度
 ```
+
+#### 详细解释
+
+**为什么 Prefill 使用扁平化张量？**
+
+```
+3 个序列的 Prefill:
+序列1: [A, B, C]     (3 tokens)
+序列2: [D, E]        (2 tokens)
+序列3: [F, G, H, I]  (4 tokens)
+
+扁平化拼接:
+input_ids = [A, B, C, D, E, F, G, H, I]  # shape: [9]
+             序列1     序列2   序列3
+
+累积边界 (cu_seqlens_q):
+cu_seqlens_q = [0, 3, 5, 9]
+               ↑  ↑  ↑  ↑
+               |  |  |  └─ 总长度
+               |  |  └──── 序列2结束
+               |  └─────── 序列1结束
+               └────────── 起始点
+
+通过 cu_seqlens_q 提取序列:
+序列1: input_ids[0:3]   → [A, B, C]
+序列2: input_ids[3:5]   → [D, E]
+序列3: input_ids[5:9]   → [F, G, H, I]
+```
+
+**优势：**
+- ✅ 大矩阵乘法，GPU 利用率高
+- ✅ Flash Attention varlen 支持变长序列
+- ✅ 减少 Python 循环开销
+
+**为什么 Decode 使用批处理张量？**
+
+```
+3 个序列的 Decode (每个序列只生成 1 个新 token):
+序列1: 已有 120 tokens，生成第 121 个
+序列2: 已有 256 tokens，生成第 257 个
+序列3: 已有 512 tokens，生成第 513 个
+
+批处理:
+input_ids = [token_121, token_257, token_513]  # shape: [3]
+q.shape = [3, 1, num_heads, head_dim]
+            ↑  ↑
+            │  └─ 序列维度（只有 1 个新 token）
+            └─── 批次维度（3 个序列）
+
+context_lens = [120, 256, 512]  # 告诉 attention 每个序列有多长
+```
+
+**Flash Attention 如何使用 context_lens？**
+
+```python
+# 伪代码
+for i in range(batch_size):
+    seq_len = context_lens[i]  # 例如: 120
+
+    # 从 KV cache 读取前 120 个位置
+    k_cache[:seq_len]  # shape: [120, num_heads, head_dim]
+    v_cache[:seq_len]
+
+    # 计算新 token 与历史 120 个 token 的 attention
+    attn(q[i], k_cache[:seq_len], v_cache[:seq_len])
+```
+
+**关键区别总结：**
+
+| 维度 | Prefill | Decode |
+|------|---------|--------|
+| **输入方式** | 所有 tokens 扁平化拼接 | 每个序列 1 个 token |
+| **形状** | `[total_tokens]` | `[batch_size]` |
+| **Q 形状** | `[total_tokens, num_heads, head_dim]` | `[batch_size, 1, num_heads, head_dim]` |
+| **边界信息** | `cu_seqlens_q` (累积边界) | `context_lens` (序列长度) |
+| **内存访问** | 连续读取全部输入 | 从 KV cache 读取历史 |
+| **计算特点** | 一次性处理长序列 | 逐步生成，频繁调用 |
+
+### 资源需求差异
+
+```
+Prefill  → 计算密集型 (Compute-bound)
+Decode   → 内存带宽密集型 (Memory-bandwidth-bound)
+```
+
+**Prefill 为什么计算密集？**
+
+- 处理大量 tokens（可能 1000+），一次矩阵乘法计算 Attention
+- 计算复杂度：O(n²)，n 是序列长度
+- 数据读一次，大量计算
+- **瓶颈**：GPU 计算单元
+
+**Decode 为什么内存带宽密集？**
+
+- 每次只处理 1 个新 token，但要读取整个 KV cache（可能 512+ tokens）
+- 计算复杂度：O(n)，n 是序列长度
+- 大量数据读取（KV cache），少量计算
+- **瓶颈**：内存带宽
+
+**硬件选择建议**：
+
+| 场景 | 阶段 | 推荐硬件 | 关键指标 |
+|------|------|---------|---------|
+| 长文本生成 | Decode 为主 | H200/B200 | 高内存带宽 (H200: 4.8 TB/s, B200: 8 TB/s) |
+| 长文本理解 | Prefill 为主 | H100 | 高算力 (FP8: 3,958 TFLOPS) |
+| 平衡型 | 两者兼有 | A100 | 算力 + 带宽平衡 (FP16: 312 TFLOPS, 带宽: 2 TB/s) |
+
+**数据来源**：
+- NVIDIA H100/H200/A100 官方规格表[[1]](https://www.nvidia.com/en-us/data-center/h100/)[[2]](https://www.nvidia.com/en-us/data-center/a100/)
+- H200 vs H100 vs A100 性能对比[[3]](https://xconnectglobal.com/2025/11/06/nvidia-a100-vs-h100-vs-h200/)
+- B200 GPU 规格数据库[[4]](https://www.techpowerup.com/gpu-specs/b200.c4210)
 
 ---
 
