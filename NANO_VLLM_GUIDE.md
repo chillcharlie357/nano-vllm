@@ -765,23 +765,52 @@ def run_model(self, input_ids, positions, is_prefill):
 
 ### 性能提升
 
+**NVIDIA 官方基准数据** (2024年9月测量):
+
+对于 100 个节点的 CUDA Graph（典型 LLM decode 场景）:
+
+| 指标 | CUDA 11.8 | CUDA 12.6 | 改善 |
+|------|-----------|-----------|------|
+| **重复启动 CPU 开销** | 25 μs | 15 μs | **40% ↓** |
+| **端到端时间** | 69 μs | 55 μs | **20% ↓** |
+
+**关键发现**:
+- 重复启动开销从线性增长（2μs + 200ns/节点）降至几乎恒定（**2.5μs + ~1ns/节点**）
+- 对于 10 节点图：CPU 开销从 ~4μs 降至 **~2.5μs**
+- 对于 1025 节点图：CPU 开销从 278μs 降至 **~175μs** (37% 改善)
+
+**LLM Decode 场景示意** (单次 token 生成):
+
 ```
-Decode 阶段 (每次 1 token):
-
-无 CUDA Graph:
-- CPU 开销: ~50μs
+无 CUDA Graph (多次 kernel launch):
+- CPU 累计开销: ~25-50μs (5-10 个 kernels × 5μs)
 - GPU 计算: ~100μs
-- 总时间: ~150μs
-- CPU 占比: 33%
+- 总时间: ~125-150μs
+- CPU 占比: 20-33%
 
-有 CUDA Graph:
-- CPU 开销: ~5μs (仅更新数据)
+有 CUDA Graph (一次 graph replay):
+- CPU 开销: ~3-5μs (仅更新数据 + 重放)
 - GPU 计算: ~100μs
-- 总时间: ~105μs
-- CPU 占比: 5%
+- 总时间: ~103-105μs
+- CPU 占比: 3-5%
 
-加速: 1.4x
+加速: 1.2-1.4x (取决于 kernel 数量和 GPU 计算时间)
 ```
+
+**性能提升因素**:
+- ✅ **减少 kernel launch 次数**：每次 launch 节省 5-15μs[[1]](https://docs.nvidia.com/deeplearning/tensorrt/latest/performance/best-practices.html)
+- ✅ **消除 CPU-GPU 同步开销**：通过图内依赖管理
+- ✅ **降低驱动层开销**：批量处理 kernel 启动
+
+**注意事项**:
+- 性能提升与 kernel 数量正相关（更多 kernels → 更大收益）
+- 当 GPU 计算时间占主导（>200μs）时，加速比下降
+- vLLM 实测：batched tokens > 200 时，收益递减[[2]](https://docs.vllm.ai/en/stable/design/cuda_graphs/)
+
+**数据来源**:
+- [NVIDIA CUDA Graphs Performance Blog (2024)](https://developer.nvidia.com/blog/constant-time-launch-for-straight-line-cuda-graphs-and-other-performance-enhancements/)
+- [NVIDIA TensorRT Best Practices](https://docs.nvidia.com/deeplearning/tensorrt/latest/performance/best-practices.html)
+- [Robust Compiler Support for CUDA Graphs in PyTorch (arXiv 2025)](https://arxiv.org/html/2503.19779v2)
 
 ---
 
@@ -798,11 +827,16 @@ Decode 阶段 (每次 1 token):
            └─ Block 0 ─┘ └─ Block 1 ─┘ └─ Block 2 ─┘
 
 block_table = [5, 2, 9]
+              ↑   ↑   ↑
+              │   │   └─ 逻辑块 2 → 物理块 9
+              │   └─────── 逻辑块 1 → 物理块 2
+              └──────────── 逻辑块 0 → 物理块 5
 
-物理内存:
+物理内存布局:
 [Block 0][Block 1][Block 2][Block 3][Block 4][Block 5][Block 6][Block 7][Block 8][Block 9]
-                    ↑           ↑                    ↑
-                  逻辑1        逻辑2                逻辑0
+                    ↓           ↓                    ↓
+                  逻辑块1      逻辑块0              逻辑块2
+                  (物理2)      (物理5)              (物理9)
 ```
 
 ### 数据结构
