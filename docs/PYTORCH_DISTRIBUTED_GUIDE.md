@@ -1,7 +1,7 @@
 ---
 title: PyTorch 分布式机制详解
-date: 2025-12-29 14:30
-modified: 2025-12-29 16:00
+date: 2025-12-29 15:51
+modified: 2025-12-29 16:09
 tags:
   - pytorch
   - distributed
@@ -13,7 +13,6 @@ categories:
 excerpt: 深入理解 torch.distributed 在 Nano-vLLM 中的应用
 mathjax: true
 comment: true
-sticky: 90
 ---
 
 # PyTorch 分布式机制详解
