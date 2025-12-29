@@ -15,6 +15,98 @@
 
 ---
 
+# 项目结构
+
+## 目录树
+
+```
+nanovllm/
+├── engine/              # 推理引擎
+│   ├── llm_engine.py    # 主引擎（协调调度+执行）
+│   ├── scheduler.py     # 调度器（Prefill/Decode 两阶段调度）
+│   ├── block_manager.py # Block 管理器（PagedAttention + Prefix Caching）
+│   ├── model_runner.py  # 模型执行器（CUDA Graph + 张量并行）
+│   └── sequence.py      # 序列状态（WAITING/RUNNING/FINISHED）
+│
+├── layers/              # 基础层抽象
+│   ├── linear.py        # 线性层（张量并行）
+│   ├── attention.py     # Flash Attention 封装
+│   ├── embed_head.py    # Embedding & LM Head
+│   ├── layernorm.py     # RMSNorm
+│   ├── activation.py    # SiLU
+│   ├── rotary_embedding.py  # RoPE 位置编码
+│   └── sampler.py       # 采样策略
+│
+├── models/              # 模型架构
+│   └── qwen3.py         # Qwen3（当前唯一支持的模型）
+│
+├── utils/               # 工具模块
+│   ├── context.py       # 上下文管理（Thread-local 存储）
+│   └── loader.py        # 权重加载器
+│
+├── config.py            # 配置类
+├── llm.py               # 对外接口（继承 LLMEngine）
+└── sampling_params.py   # 采样参数
+```
+
+## 架构层次
+
+```
+┌─────────────────────────────────────────┐
+│           LLM (对外接口)                  │
+│         nanovllm/llm.py                  │
+└─────────────────┬───────────────────────┘
+                  │
+┌─────────────────▼───────────────────────┐
+│        LLMEngine (核心引擎)              │
+│     engine/llm_engine.py                 │
+│  ┌──────────────┬──────────────────┐    │
+│  │              │                   │    │
+│  ▼              ▼                   ▼    │
+│ Scheduler   BlockManager    ModelRunner │
+│  调度器       Block管理        模型执行   │
+└─────────────────────────────────────┘
+                  │
+        ┌─────────▼──────────┐
+        │   基础层 (layers)  │
+        │  Linear/Attention  │
+        │   RMSNorm/RoPE     │
+        └─────────┬──────────┘
+                  │
+        ┌─────────▼──────────┐
+        │  模型 (models)     │
+        │    Qwen3           │
+        └────────────────────┘
+```
+
+## 核心模块说明
+
+### 推理引擎 (`engine/`)
+
+| 模块 | 职责 |
+|------|------|
+| **Scheduler** | 两阶段调度：Prefill 阶段处理新请求，Decode 阶段继续生成，内存不足时抢占 |
+| **BlockManager** | PagedAttention 实现：分配/释放 Block，Prefix Caching 通过哈希去重复用计算 |
+| **ModelRunner** | 模型执行：Prefill 用 varlen attention，Decode 用 kvcache attention，CUDA Graph 优化 |
+| **Sequence** | 序列状态管理：跟踪 token 数、block_table、缓存状态 |
+
+### 基础层 (`layers/`)
+
+| 模块 | 职责 |
+|------|------|
+| **Linear** | 张量并行线性层（ColumnParallel, RowParallel, QKVParallel） |
+| **Attention** | Flash Attention 封装：Prefill 用 `flash_attn_varlen_func`，Decode 用 `flash_attn_with_kvcache` |
+| **RotaryEmbedding** | RoPE 位置编码计算 |
+| **Sampler** | 采样策略：Greedy, Top-K, Top-P, Nucleus |
+
+### 模型 (`models/`)
+
+| 模型 | 架构特点 |
+|------|---------|
+| **Qwen3** | QKV 融合投影 + Gated MLP (SiLU) + Pre-norm (RMSNorm) |
+
+---
+
 # 概述与对比
 
 ## 什么是 Nano-vLLM？
