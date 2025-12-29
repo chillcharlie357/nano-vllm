@@ -152,14 +152,6 @@ dist.init_process_group("nccl", ...)
 - ✅ **支持 GPU Direct RDMA**：绕过 CPU，直接 GPU-GPU 传输
 - ❌ **仅限 NVIDIA GPU**
 
-**性能**（单机 8x A100）：
-
-| 操作 | 带宽 | 延迟 |
-|------|------|------|
-| All-Reduce | ~300 GB/s | ~10 μs |
-| Broadcast | ~300 GB/s | ~5 μs |
-| Barrier | - | ~1 μs |
-
 **Nano-vLLM 使用**：
 
 ```python
@@ -399,16 +391,21 @@ Rank 2: [3, 3, 3]
 
 ### 性能对比
 
-| 操作 | 数据量 | 时间复杂度 | 带宽利用率 |
-|------|--------|-----------|-----------|
-| **Barrier** | 0 字节 | O(log P) | N/A |
-| **Broadcast** | N 字节 | O(N) | ⭐⭐⭐ |
-| **All-Reduce** | N 字节 | O(N) | ⭐⭐⭐⭐⭐ |
-| **Reduce** | N 字节 | O(N) | ⭐⭐⭐⭐ |
-| **All-Gather** | N×P 字节 | O(N×P) | ⭐⭐⭐⭐ |
-| **Scatter** | N×P 字节 | O(N×P) | ⭐⭐⭐ |
+| 操作 | 数据量 | 时间复杂度 |
+|------|--------|-----------|
+| **Barrier** | 0 字节 | O(log P) |
+| **Broadcast** | N 字节 | O(N) |
+| **All-Reduce** | N 字节 | O(N) |
+| **Reduce** | N 字节 | O(N) |
+| **All-Gather** | N×P 字节 | O(N×P) |
+| **Scatter** | N×P 字节 | O(N×P) |
 
 注：P = 进程数
+
+**说明**：
+- 实际性能取决于硬件配置（NVLink/PCIe/网络）
+- NCCL 在 NVLink 上可达到最高性能
+- 延迟和带宽因 GPU 型号（A100/H100）和配置而异
 
 ---
 
