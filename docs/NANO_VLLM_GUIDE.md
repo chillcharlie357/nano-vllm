@@ -1,3 +1,20 @@
+---
+title: Nano-vLLM 源码解析
+date: 2025-12-29 14:30
+modified: 2025-12-29 16:00
+tags:
+  - vllm
+  - AIInfra
+  - LLM
+  - 推理引擎
+categories:
+  - 技术分享
+excerpt: 从原理到实践：深入理解轻量级 LLM 推理引擎
+mathjax: true
+comment: true
+sticky: 100
+---
+
 # Nano-vLLM 源码解析
 
 > 从原理到实践：深入理解轻量级 LLM 推理引擎
