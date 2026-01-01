@@ -2,6 +2,34 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Documentation Guidelines
+
+### Time Stamps
+
+**CRITICAL**: When creating or modifying markdown files in the `docs/` directory, always use the **current system time** for YAML front matter:
+
+```bash
+# Get current time before creating/modifying docs
+date "+%Y-%m-%d %H:%M"
+```
+
+Example YAML front matter:
+```yaml
+---
+title: Your Document Title
+date: 2025-12-31 01:03    # ← Use current system time
+modified: 2025-12-31 01:03 # ← Same as date for new files
+tags:
+  - tag1
+  - tag2
+categories:
+  - 技术分享
+excerpt: Brief description
+mathjax: true
+comment: true
+---
+```
+
 ## Common Commands
 
 ### Running Examples

@@ -96,11 +96,15 @@ class BlockManager:
     def may_append(self, seq: Sequence):
         block_table = seq.block_table
         last_block = self.blocks[block_table[-1]]
+
+        # len(seq) % block_size 作用
+        # 跨越block边界，分配新block
         if len(seq) % self.block_size == 1:
             assert last_block.hash != -1
             block_id = self.free_block_ids[0]
             self._allocate_block(block_id)
             block_table.append(block_id)
+        # block刚好填满，就算新hash，进行prefix caching
         elif len(seq) % self.block_size == 0:
             assert last_block.hash == -1
             token_ids = seq.block(seq.num_blocks-1)
@@ -108,5 +112,6 @@ class BlockManager:
             h = self.compute_hash(token_ids, prefix)
             last_block.update(h, token_ids)
             self.hash_to_block_id[h] = last_block.block_id
+        # block内填充，无需特殊操作
         else:
             assert last_block.hash == -1
